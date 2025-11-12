@@ -249,10 +249,18 @@ namespace i2cbus
 
     esp_err_t I2C::readBytes(uint8_t devAddr, uint8_t regAddr, size_t length, uint8_t *data, int32_t timeout)
     {
-        esp_err_t err = rawWrite(devAddr, &regAddr, 1, timeout);
-        if (err != ESP_OK)
-            return err;
-        err = rawRead(devAddr, data, length, timeout);
+        esp_err_t err = rawWriteRead(
+                devAddr,
+                &regAddr,
+                1,
+                data,
+                length,
+                timeout
+            );
+//        esp_err_t err = rawWrite(devAddr, &regAddr, 1, timeout);
+//        if (err != ESP_OK)
+//            return err;
+//        err = rawRead(devAddr, data, length, timeout);
 #if defined CONFIG_I2CBUS_LOG_READWRITES
         if (!err)
         {
@@ -321,6 +329,20 @@ namespace i2cbus
             return ESP_ERR_INVALID_ARG;
         return i2c_master_receive(deviceHandle, data, len,
                                   (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+    }
+
+    esp_err_t I2C::rawWriteRead(uint8_t devAddr,
+                                 const uint8_t* writeData, size_t writeLen,
+                                 uint8_t* readData, size_t readLen,
+                                 int32_t timeout)
+    {
+        i2c_master_dev_handle_t deviceHandle = getDeviceHandle(devAddr);
+        if (!deviceHandle)
+            return ESP_ERR_INVALID_ARG;
+        return i2c_master_transmit_receive(deviceHandle,
+                                     writeData, writeLen,
+                                     readData, readLen,
+                                     (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
     }
 
     /*******************************************************************************

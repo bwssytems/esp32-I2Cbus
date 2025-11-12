@@ -157,6 +157,10 @@ public:
     // ---------- Raw stream interface (explicit) ----------
     esp_err_t rawWrite(uint8_t devAddr, const uint8_t* data, size_t len, int32_t timeout = -1);
     esp_err_t rawRead (uint8_t devAddr, uint8_t* data, size_t len, int32_t timeout = -1);
+    esp_err_t rawWriteRead(uint8_t devAddr,
+                             const uint8_t* writeData, size_t writeLen,
+                             uint8_t* readData, size_t readLen,
+                             int32_t timeout = -1);
 
     /**
      * @brief  Quick check to see if a slave device responds.
