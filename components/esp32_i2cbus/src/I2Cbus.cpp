@@ -294,22 +294,18 @@ namespace i2cbus
     // ---------- 16-bit register variants ----------
     esp_err_t I2C::writeReg16(uint8_t devAddr, uint16_t regAddr, const uint8_t *data, size_t len, int32_t timeout)
     {
-        std::string frame;
-        frame.resize(2 + len);
-        frame[0] = static_cast<char>((regAddr >> 8) & 0xFF);
-        frame[1] = static_cast<char>(regAddr & 0xFF);
+        uint8_t addr[2 + len];
+        addr[0] = (uint8_t)((regAddr >> 8) & 0xFF);
+        addr[1] = (uint8_t)(regAddr & 0xFF);
         if (len)
-            memcpy(&frame[2], data, len);
-        return rawWrite(devAddr, reinterpret_cast<const uint8_t *>(frame.data()), frame.size(), timeout);
+            memcpy(&addr[2], data, len);
+        return rawWrite(devAddr, addr, 2 + len, timeout);
     }
 
     esp_err_t I2C::readReg16(uint8_t devAddr, uint16_t regAddr, uint8_t *data, size_t len, int32_t timeout)
     {
         uint8_t addr[2] = {(uint8_t)((regAddr >> 8) & 0xFF), (uint8_t)(regAddr & 0xFF)};
-        esp_err_t err = rawWrite(devAddr, addr, 2, timeout);
-        if (err != ESP_OK)
-            return err;
-        return rawRead(devAddr, data, len, timeout);
+        return rawWriteRead(devAddr, addr, 2, data, len, timeout);
     }
 
     // ---------- Raw stream ----------
