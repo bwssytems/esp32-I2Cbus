@@ -59,8 +59,10 @@ class I2C {
     i2c_master_bus_handle_t m_i2c_mst_handle;       /*!< I2C master bus handle */
     uint32_t m_default_clk_speed = kDefaultClockSpeed;
     std::vector<std::pair<i2c_master_dev_handle_t, uint8_t>> m_devices;
+    uint32_t m_rawWriteReadFailureCount = 0;        /*!< Count of failed rawWriteRead attempts (per retry attempt). */
     uint8_t findAddr(i2c_master_dev_handle_t h) const;
     i2c_master_dev_handle_t getDeviceHandle(uint8_t devAddr);
+    esp_err_t rebuildDevice(uint8_t devAddr);
     esp_err_t addDevice(i2c_device_config_t devConfig, i2c_master_dev_handle_t* deviceHandle);
     esp_err_t removeDevice(i2c_master_dev_handle_t deviceHandle);
 
@@ -163,6 +165,16 @@ public:
                              int32_t timeout = -1);
 
     /**
+     * @brief Get the total number of failed attempts inside rawWriteRead() retry loop.
+     */
+    uint32_t getRawWriteReadFailureCount() const;
+
+    /**
+     * @brief Reset the rawWriteRead() failure counter to zero.
+     */
+    void resetRawWriteReadFailureCount();
+
+    /**
      * @brief  Quick check to see if a slave device responds.
      * @param  devAddr   [I2C slave device register]
      * @param  timeout   [Custom timeout for the particular call]
@@ -172,7 +184,13 @@ public:
      *          - ESP_ERR_INVALID_STATE I2C driver not installed or not in master mode.
      *          - ESP_ERR_TIMEOUT Operation timeout because the bus is busy.]
      */
-    esp_err_t testConnection(uint8_t devAddr, int32_t timeout = -1);
+    esp_err_t probeBus(uint8_t devAddr, int32_t timeout = -1);
+
+
+    /**
+     * @brief Reset the i2c bus using the reset command
+     */
+    esp_err_t reset();
 
     /**
      * I2C scanner utility, prints out all device addresses found on this I2C bus.
@@ -187,7 +205,5 @@ public:
 constexpr I2C_t& getI2C(i2c_port_t port) {
     return port == 0 ? i2c0 : i2c1;
 }
-
-
 
 #endif /* end of include guard: _I2CBUS_H_ */

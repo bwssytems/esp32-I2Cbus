@@ -77,24 +77,27 @@ namespace i2cbus
                          uint32_t clk_speed)
     {
         m_default_clk_speed = clk_speed;
+        m_i2c_mst_config = {}; // zero-init
+        m_i2c_mst_config.i2c_port = port;
+        m_i2c_mst_config.sda_io_num = sda_io_num;
+        m_i2c_mst_config.scl_io_num = scl_io_num;
+        m_i2c_mst_config.clk_source = I2C_CLK_SRC_DEFAULT;
+        m_i2c_mst_config.glitch_ignore_cnt = 7;
+        m_i2c_mst_config.flags.enable_internal_pullup = (pullup_en == GPIO_PULLUP_ENABLE);
 
-        esp_err_t err = i2c_master_get_bus_handle(port, &m_i2c_mst_handle);
-        if (err != ESP_OK)
-        {
-            m_i2c_mst_config = {}; // zero-init
-            m_i2c_mst_config.i2c_port = port;
-            m_i2c_mst_config.sda_io_num = sda_io_num;
-            m_i2c_mst_config.scl_io_num = scl_io_num;
-            m_i2c_mst_config.clk_source = I2C_CLK_SRC_DEFAULT;
-            m_i2c_mst_config.glitch_ignore_cnt = 7;
-            m_i2c_mst_config.flags.enable_internal_pullup = (pullup_en == GPIO_PULLUP_ENABLE);
+        esp_err_t err = i2c_new_master_bus(&m_i2c_mst_config, &m_i2c_mst_handle);
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
 
-            err = i2c_new_master_bus(&m_i2c_mst_config, &m_i2c_mst_handle);
+        if (err == ESP_ERR_INVALID_STATE) {
+            err = i2c_master_get_bus_handle(port, &m_i2c_mst_handle);
+            if (err == ESP_OK && m_i2c_mst_handle != nullptr) {
+                ESP_LOGD(TAG, "I2C bus already initialized.");
+                return ESP_OK;
+            }
         }
-        else
-        {
-            ESP_LOGD(TAG, "I2C bus already initialized.");
-        }
+
         return err;
     }
 
@@ -312,19 +315,69 @@ namespace i2cbus
     esp_err_t I2C::rawWrite(uint8_t devAddr, const uint8_t *data, size_t len, int32_t timeout)
     {
         i2c_master_dev_handle_t deviceHandle = getDeviceHandle(devAddr);
-        if (!deviceHandle)
-            return ESP_ERR_INVALID_ARG;
-        return i2c_master_transmit(deviceHandle, const_cast<uint8_t *>(data), len,
-                                   (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+        if (!deviceHandle) {
+            const esp_err_t rebuildErr = rebuildDevice(devAddr);
+            if (rebuildErr != ESP_OK) {
+                return rebuildErr;
+            }
+            deviceHandle = getDeviceHandle(devAddr);
+            if (!deviceHandle) {
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+
+        esp_err_t err = i2c_master_transmit(deviceHandle, const_cast<uint8_t *>(data), len,
+                                            (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+
+        if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_TIMEOUT) {
+            (void)i2c_master_bus_reset(m_i2c_mst_handle);
+            if (rebuildDevice(devAddr) == ESP_OK) {
+                deviceHandle = getDeviceHandle(devAddr);
+                if (deviceHandle) {
+                    err = i2c_master_transmit(deviceHandle, const_cast<uint8_t *>(data), len,
+                                              (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                }
+            }
+        }
+
+        return err;
     }
 
     esp_err_t I2C::rawRead(uint8_t devAddr, uint8_t *data, size_t len, int32_t timeout)
     {
         i2c_master_dev_handle_t deviceHandle = getDeviceHandle(devAddr);
-        if (!deviceHandle)
-            return ESP_ERR_INVALID_ARG;
-        return i2c_master_receive(deviceHandle, data, len,
-                                  (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+        if (!deviceHandle) {
+            const esp_err_t rebuildErr = rebuildDevice(devAddr);
+            if (rebuildErr != ESP_OK) {
+                return rebuildErr;
+            }
+            deviceHandle = getDeviceHandle(devAddr);
+            if (!deviceHandle) {
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+
+        esp_err_t err = i2c_master_receive(deviceHandle, data, len,
+                                           (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+
+        if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_TIMEOUT) {
+            (void)i2c_master_bus_reset(m_i2c_mst_handle);
+            if (rebuildDevice(devAddr) == ESP_OK) {
+                deviceHandle = getDeviceHandle(devAddr);
+                if (deviceHandle) {
+                    err = i2c_master_receive(deviceHandle, data, len,
+                                             (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                }
+            }
+        }
+
+        return err;
     }
 
     esp_err_t I2C::rawWriteRead(uint8_t devAddr,
@@ -332,19 +385,57 @@ namespace i2cbus
                                  uint8_t* readData, size_t readLen,
                                  int32_t timeout)
     {
-        i2c_master_dev_handle_t deviceHandle = getDeviceHandle(devAddr);
-        if (!deviceHandle)
-            return ESP_ERR_INVALID_ARG;
-        return i2c_master_transmit_receive(deviceHandle,
-                                     writeData, writeLen,
-                                     readData, readLen,
-                                     (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+        constexpr int kRawWriteReadRetryCount = CONFIG_I2CBUS_RAW_WRITE_READ_RETRY_COUNT;
+        constexpr int kRawWriteReadRetryDelayMs = CONFIG_I2CBUS_RAW_WRITE_READ_RETRY_DELAY_MS;
+        esp_err_t err = ESP_ERR_INVALID_STATE;
+        for(int i = 0; i < kRawWriteReadRetryCount; i++) {
+            i2c_master_dev_handle_t deviceHandle = getDeviceHandle(devAddr);
+            if (!deviceHandle) {
+                const esp_err_t rebuildErr = rebuildDevice(devAddr);
+                if (rebuildErr != ESP_OK) {
+                    err = rebuildErr;
+                    ++m_rawWriteReadFailureCount;
+                    vTaskDelay(pdMS_TO_TICKS(kRawWriteReadRetryDelayMs));
+                    continue;
+                }
+                deviceHandle = getDeviceHandle(devAddr);
+                if (!deviceHandle) {
+                    err = ESP_ERR_INVALID_STATE;
+                    ++m_rawWriteReadFailureCount;
+                    vTaskDelay(pdMS_TO_TICKS(kRawWriteReadRetryDelayMs));
+                    continue;
+                }
+            }
+
+            err = i2c_master_transmit_receive(deviceHandle,
+                                                        writeData, writeLen,
+                                                        readData, readLen,
+                                                        (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+            if (err == ESP_OK) {
+                return ESP_OK;
+            }
+            ++m_rawWriteReadFailureCount;
+            i2c_master_bus_reset(m_i2c_mst_handle);
+            (void)rebuildDevice(devAddr);
+            vTaskDelay(pdMS_TO_TICKS(kRawWriteReadRetryDelayMs));
+        }
+        return err;
+    }
+
+    uint32_t I2C::getRawWriteReadFailureCount() const
+    {
+        return m_rawWriteReadFailureCount;
+    }
+
+    void I2C::resetRawWriteReadFailureCount()
+    {
+        m_rawWriteReadFailureCount = 0;
     }
 
     /*******************************************************************************
      * UTILS
      ******************************************************************************/
-    esp_err_t I2C::testConnection(uint8_t devAddr, int32_t timeout)
+    esp_err_t I2C::probeBus(uint8_t devAddr, int32_t timeout)
     {
         esp_err_t err = i2c_master_probe(m_i2c_mst_handle, devAddr,
                                          (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
@@ -359,7 +450,7 @@ namespace i2cbus
         uint8_t count = 0;
         for (size_t i = 0x3; i < 0x78; i++)
         {
-            if (testConnection(i, scanTimeout) == ESP_OK)
+            if (probeBus(i, scanTimeout) == ESP_OK)
             {
                 printf(LOG_COLOR_W "- Device found at address 0x%X%s", i, LOG_RESET_COLOR "\n");
                 count++;
@@ -379,12 +470,41 @@ namespace i2cbus
     }
 
     i2c_master_dev_handle_t I2C::getDeviceHandle(uint8_t devAddr) {
-        for (auto &p : m_devices) {
-            if (p.second == devAddr) {
-                return (i2c_master_dev_handle_t)p.first;
+        for (auto it = m_devices.rbegin(); it != m_devices.rend(); ++it) {
+            if (it->second == devAddr) {
+                return (i2c_master_dev_handle_t)it->first;
             }
         }
         return nullptr;
+    }
+
+    esp_err_t I2C::rebuildDevice(uint8_t devAddr)
+    {
+        if (m_i2c_mst_handle == nullptr) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        for (auto it = m_devices.begin(); it != m_devices.end(); ) {
+            if (it->second == devAddr) {
+                (void)i2c_master_bus_rm_device(it->first);
+                it = m_devices.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        i2c_device_config_t devConfig = {};
+        devConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        devConfig.device_address = devAddr;
+        devConfig.scl_speed_hz = m_default_clk_speed;
+        devConfig.scl_wait_us = 0;
+
+        i2c_master_dev_handle_t handle = nullptr;
+        const esp_err_t err = i2c_master_bus_add_device(m_i2c_mst_handle, &devConfig, &handle);
+        if (err == ESP_OK) {
+            m_devices.emplace_back(handle, devAddr);
+        }
+        return err;
     }
     
     esp_err_t I2C::addDevice(i2c_device_config_t devConfig, i2c_master_dev_handle_t *deviceHandle)
@@ -405,7 +525,7 @@ namespace i2cbus
     esp_err_t I2C::removeDevice(i2c_master_dev_handle_t deviceHandle)
     {
         esp_err_t err = i2c_master_bus_rm_device(deviceHandle);
-        if (err == ESP_OK)
+        if (err == ESP_OK || err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_ARG)
         {
             for (auto it = m_devices.begin(); it != m_devices.end(); ++it)
             {
@@ -425,11 +545,29 @@ namespace i2cbus
     }
 
     esp_err_t I2C::removeDevice(uint8_t devAddr) {
-        i2c_master_dev_handle_t handle = getDeviceHandle(devAddr);
-        if (handle == nullptr) {
+        std::vector<i2c_master_dev_handle_t> handles;
+        handles.reserve(m_devices.size());
+        for (const auto &p : m_devices) {
+            if (p.second == devAddr) {
+                handles.push_back(p.first);
+            }
+        }
+
+        if (handles.empty()) {
             return ESP_ERR_INVALID_ARG;
         }
-        return removeDevice(handle);
+
+        esp_err_t ret = ESP_OK;
+        for (auto handle : handles) {
+            const esp_err_t err = removeDevice(handle);
+            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_ERR_INVALID_ARG && ret == ESP_OK) {
+                ret = err;
+            }
+        }
+        return ret;
     }
 
+    esp_err_t I2C::reset() {
+        return i2c_master_bus_reset(m_i2c_mst_handle);
+    }
 } // namespace i2cbus
