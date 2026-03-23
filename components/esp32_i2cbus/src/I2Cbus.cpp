@@ -55,11 +55,10 @@ I2C_t i2c1 = i2cbus::I2C(I2C_NUM_1);
  * ^^^^^^ */
 namespace i2cbus
 {
-
     /*******************************************************************************
      * SETUP
      ******************************************************************************/
-    I2C::I2C(i2c_port_t port) : port{port}, ticksToWait{pdMS_TO_TICKS(kDefaultTimeout)}
+    I2C::I2C(i2c_port_t port) : port{port}, timeoutMs{kDefaultTimeout}
     {
     }
 
@@ -76,6 +75,7 @@ namespace i2cbus
     esp_err_t I2C::begin(gpio_num_t sda_io_num, gpio_num_t scl_io_num, gpio_pullup_t pullup_en,
                          uint32_t clk_speed)
     {
+        m_lastBeginCreatedBus = false;
         m_default_clk_speed = clk_speed;
         m_i2c_mst_config = {}; // zero-init
         m_i2c_mst_config.i2c_port = port;
@@ -87,6 +87,7 @@ namespace i2cbus
 
         esp_err_t err = i2c_new_master_bus(&m_i2c_mst_config, &m_i2c_mst_handle);
         if (err == ESP_OK) {
+            m_lastBeginCreatedBus = true;
             return ESP_OK;
         }
 
@@ -114,12 +115,13 @@ namespace i2cbus
         esp_err_t err = i2c_del_master_bus(m_i2c_mst_handle);
         if (err == ESP_OK)
             m_i2c_mst_handle = nullptr;
+        m_lastBeginCreatedBus = false;
         return err;
     }
 
     void I2C::setTimeout(uint32_t ms)
     {
-        ticksToWait = pdMS_TO_TICKS(ms);
+        timeoutMs = ms;
     }
 
     // ---------- Bit helpers ----------
@@ -327,7 +329,7 @@ namespace i2cbus
         }
 
         esp_err_t err = i2c_master_transmit(deviceHandle, const_cast<uint8_t *>(data), len,
-                                            (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                            (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
         if (err == ESP_OK) {
             return ESP_OK;
         }
@@ -338,7 +340,7 @@ namespace i2cbus
                 deviceHandle = getDeviceHandle(devAddr);
                 if (deviceHandle) {
                     err = i2c_master_transmit(deviceHandle, const_cast<uint8_t *>(data), len,
-                                              (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                              (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
                 }
             }
         }
@@ -361,7 +363,7 @@ namespace i2cbus
         }
 
         esp_err_t err = i2c_master_receive(deviceHandle, data, len,
-                                           (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                           (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
         if (err == ESP_OK) {
             return ESP_OK;
         }
@@ -372,7 +374,7 @@ namespace i2cbus
                 deviceHandle = getDeviceHandle(devAddr);
                 if (deviceHandle) {
                     err = i2c_master_receive(deviceHandle, data, len,
-                                             (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                             (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
                 }
             }
         }
@@ -410,7 +412,7 @@ namespace i2cbus
             err = i2c_master_transmit_receive(deviceHandle,
                                                         writeData, writeLen,
                                                         readData, readLen,
-                                                        (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                                        (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
             if (err == ESP_OK) {
                 return ESP_OK;
             }
@@ -438,7 +440,7 @@ namespace i2cbus
     esp_err_t I2C::probeBus(uint8_t devAddr, int32_t timeout)
     {
         esp_err_t err = i2c_master_probe(m_i2c_mst_handle, devAddr,
-                                         (timeout < 0 ? ticksToWait : pdMS_TO_TICKS(timeout)));
+                                         (timeout < 0 ? static_cast<int>(timeoutMs) : timeout));
 
         return err;
     }

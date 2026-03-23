@@ -54,12 +54,13 @@ namespace i2cbus {
 class I2C {
  private:
     i2c_port_t port;            /*!< I2C port: I2C_NUM_0 or I2C_NUM_1 */
-    uint32_t ticksToWait;       /*!< Timeout in ticks for read and write */
+    uint32_t timeoutMs;         /*!< Timeout in milliseconds for read and write */
     i2c_master_bus_config_t m_i2c_mst_config = {};  /*!< I2C master bus configuration */
-    i2c_master_bus_handle_t m_i2c_mst_handle;       /*!< I2C master bus handle */
+    i2c_master_bus_handle_t m_i2c_mst_handle = nullptr;       /*!< I2C master bus handle */
     uint32_t m_default_clk_speed = kDefaultClockSpeed;
     std::vector<std::pair<i2c_master_dev_handle_t, uint8_t>> m_devices;
     uint32_t m_rawWriteReadFailureCount = 0;        /*!< Count of failed rawWriteRead attempts (per retry attempt). */
+    bool m_lastBeginCreatedBus = false;
     uint8_t findAddr(i2c_master_dev_handle_t h) const;
     i2c_master_dev_handle_t getDeviceHandle(uint8_t devAddr);
     esp_err_t rebuildDevice(uint8_t devAddr);
@@ -96,6 +97,7 @@ public:
      * Timeout read and write in milliseconds
      */
     void setTimeout(uint32_t ms);
+    bool lastBeginCreatedBus() const { return m_lastBeginCreatedBus; }
 
     /**
      * Device management interface for new i2c bus handling
